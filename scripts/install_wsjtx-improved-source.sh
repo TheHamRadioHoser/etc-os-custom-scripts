@@ -8,9 +8,9 @@ PROGRAM_NAME="wsjtx-improved"
 APP_SLUG="${PROGRAM_NAME}"
 DISPLAY_NAME="WSJT-X Improved"
 FILES_URL="https://sourceforge.net/projects/wsjt-x-improved/files/"
-USE_SYSTEM_HAMLIB="no"
+USE_SYSTEM_HAMLIB="yes"
 HAMLIB_REPO="https://github.com/Hamlib/Hamlib.git"
-HAMLIB_BRANCH="integration"
+HAMLIB_BRANCH=""
 APP_DIR="$HOME/Applications/${APP_SLUG}"
 BUILD_DIR="$HOME/Downloads/${APP_SLUG}_build"
 WRAPPER_PATH="$APP_DIR/run-${APP_SLUG}.sh"
@@ -92,7 +92,7 @@ install_dependencies() {
         build-essential cmake git gfortran make pkg-config autoconf automake libtool asciidoc \
         qtbase5-dev qtmultimedia5-dev libqt5serialport5-dev libqt5websockets5-dev qttools5-dev qttools5-dev-tools \
         libfftw3-dev libboost-all-dev libreadline-dev libusb-1.0-0-dev libudev-dev libasound2-dev \
-        ca-certificates curl wget
+        libhamlib-dev ca-certificates curl wget
 }
 
 cleanup() {
@@ -143,7 +143,11 @@ build_hamlib() {
     cd "$BUILD_DIR"
 
     rm -rf hamlib-src hamlib-build "$HAMLIB_PREFIX"
-    git clone --depth 1 --branch "$HAMLIB_BRANCH" "$HAMLIB_REPO" hamlib-src
+    if [ -n "$HAMLIB_BRANCH" ]; then
+        git clone --depth 1 --branch "$HAMLIB_BRANCH" "$HAMLIB_REPO" hamlib-src
+    else
+        git clone --depth 1 "$HAMLIB_REPO" hamlib-src
+    fi
 
     cd "$BUILD_DIR/hamlib-src"
     ./bootstrap
@@ -217,9 +221,13 @@ replace_app_dir() {
     fi
 
     if mv "$new_dir" "$APP_DIR"; then
-        [ -n "$backup_dir" ] && rm -rf "$backup_dir"
+        if [ -n "$backup_dir" ]; then
+            rm -rf "$backup_dir"
+        fi
     else
-        [ -n "$backup_dir" ] && mv "$backup_dir" "$APP_DIR"
+        if [ -n "$backup_dir" ]; then
+            mv "$backup_dir" "$APP_DIR"
+        fi
         die "could not replace $APP_DIR"
     fi
 }

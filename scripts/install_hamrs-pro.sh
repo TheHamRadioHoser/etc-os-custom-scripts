@@ -10,6 +10,7 @@ DISPLAY_NAME="HAMRS Pro"
 URL_BASE="https://hamrs.app/"
 APP_DIR="$HOME/Applications/${APP_SLUG}"
 BUILD_DIR="$HOME/Downloads/${APP_SLUG}_build"
+APPIMAGE_PATH="$APP_DIR/${PROGRAM_NAME}.AppImage"
 WRAPPER_PATH="$APP_DIR/run-${APP_SLUG}.sh"
 LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
 CONFIG_DIR="$HOME/.config/${APP_SLUG}"
@@ -50,6 +51,49 @@ ensure_safe_app_dir() {
     esac
 }
 
+maybe_switch_ubuntu_2210_to_old_releases() {
+    local os_id="" os_codename="" reply="" backup=""
+
+    [ -r /etc/os-release ] || return 0
+    os_id="$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"' | head -n 1)"
+    os_codename="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release | tr -d '"' | head -n 1)"
+
+    [ "$os_id" = "ubuntu" ] || return 0
+    [ "$os_codename" = "kinetic" ] || return 0
+    grep -Rqs 'old-releases.ubuntu.com/ubuntu' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null && return 0
+
+    echo "Ubuntu 22.10 (kinetic) is EOL, so normal Ubuntu mirrors may fail."
+    read -r -p "Switch /etc/apt/sources.list to old-releases.ubuntu.com now? [y/N] " reply || true
+    case "$reply" in
+        [Yy]|[Yy][Ee][Ss]) ;;
+        *) echo "Skipping apt source change. apt may fail if sources are not already fixed."; return 0 ;;
+    esac
+
+    [ -f /etc/apt/sources.list ] || die "/etc/apt/sources.list was not found"
+    backup="/etc/apt/sources.list.backup-${APP_SLUG}-$(date +%Y%m%d%H%M%S)"
+    sudo cp /etc/apt/sources.list "$backup"
+    sudo sed -i \
+        -e 's|http://[A-Za-z0-9.-]*/ubuntu|http://old-releases.ubuntu.com/ubuntu|g' \
+        -e 's|https://[A-Za-z0-9.-]*/ubuntu|http://old-releases.ubuntu.com/ubuntu|g' \
+        /etc/apt/sources.list
+    echo "Backed up original apt sources to $backup"
+}
+
+ensure_appimage_runtime() {
+    if ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
+        return 0
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Installing AppImage runtime dependency: libfuse2"
+        maybe_switch_ubuntu_2210_to_old_releases
+        sudo apt update
+        sudo apt install -y libfuse2
+    else
+        echo "Warning: libfuse2 was not detected. AppImages may not launch on this system." >&2
+    fi
+}
+
 cleanup() {
     rm -rf "$BUILD_DIR"
 }
@@ -69,9 +113,13 @@ replace_app_dir() {
     fi
 
     if mv "$new_dir" "$APP_DIR"; then
-        [ -n "$backup_dir" ] && rm -rf "$backup_dir"
+        if [ -n "$backup_dir" ]; then
+            rm -rf "$backup_dir"
+        fi
     else
-        [ -n "$backup_dir" ] && mv "$backup_dir" "$APP_DIR"
+        if [ -n "$backup_dir" ]; then
+            mv "$backup_dir" "$APP_DIR"
+        fi
         die "could not replace $APP_DIR"
     fi
 }
@@ -83,8 +131,7 @@ set -e
 export XDG_CONFIG_HOME="$CONFIG_DIR"
 export XDG_DATA_HOME="$DATA_DIR"
 mkdir -p "\$XDG_CONFIG_HOME" "\$XDG_DATA_HOME"
-cd "$APP_DIR"
-exec "$APP_DIR/AppRun" --no-sandbox "\$@"
+exec "$APPIMAGE_PATH" --no-sandbox "\$@"
 EOF
     chmod +x "$WRAPPER_PATH"
 }
@@ -141,11 +188,22 @@ cd "$BUILD_DIR"
 wget -O "${PROGRAM_NAME}.AppImage" "$latest_url"
 chmod +x "${PROGRAM_NAME}.AppImage"
 
-echo "Extracting AppImage..."
+echo "Extracting AppImage icon..."
 ./"${PROGRAM_NAME}.AppImage" --appimage-extract >/dev/null
-[ -x "$BUILD_DIR/squashfs-root/AppRun" ] || die "AppImage extraction did not produce AppRun"
+[ -d "$BUILD_DIR/squashfs-root" ] || die "AppImage extraction did not produce squashfs-root"
 
-replace_app_dir "$BUILD_DIR/squashfs-root"
+new_app_dir="$BUILD_DIR/new-app"
+rm -rf "$new_app_dir"
+mkdir -p "$new_app_dir"
+mv "$BUILD_DIR/${PROGRAM_NAME}.AppImage" "$new_app_dir/${PROGRAM_NAME}.AppImage"
+
+icon_candidate="$(find "$BUILD_DIR/squashfs-root" -type f \( -iname '*hamrs*.png' -o -iname '*hamrs*.svg' -o -iname '.DirIcon' \) | head -n 1 || true)"
+if [ -n "$icon_candidate" ]; then
+    cp "$icon_candidate" "$new_app_dir/${PROGRAM_NAME}.png"
+fi
+
+ensure_appimage_runtime
+replace_app_dir "$new_app_dir"
 create_wrapper
 create_launcher "$(get_desktop_dir)"
 

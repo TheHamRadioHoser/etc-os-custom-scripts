@@ -96,9 +96,13 @@ replace_app_dir() {
     fi
 
     if mv "$new_dir" "$APP_DIR"; then
-        [ -n "$backup_dir" ] && rm -rf "$backup_dir"
+        if [ -n "$backup_dir" ]; then
+            rm -rf "$backup_dir"
+        fi
     else
-        [ -n "$backup_dir" ] && mv "$backup_dir" "$APP_DIR"
+        if [ -n "$backup_dir" ]; then
+            mv "$backup_dir" "$APP_DIR"
+        fi
         die "could not replace $APP_DIR"
     fi
 }

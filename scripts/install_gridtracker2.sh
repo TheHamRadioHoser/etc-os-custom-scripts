@@ -70,9 +70,13 @@ replace_app_dir() {
     fi
 
     if mv "$new_dir" "$APP_DIR"; then
-        [ -n "$backup_dir" ] && rm -rf "$backup_dir"
+        if [ -n "$backup_dir" ]; then
+            rm -rf "$backup_dir"
+        fi
     else
-        [ -n "$backup_dir" ] && mv "$backup_dir" "$APP_DIR"
+        if [ -n "$backup_dir" ]; then
+            mv "$backup_dir" "$APP_DIR"
+        fi
         die "could not replace $APP_DIR"
     fi
 }
@@ -120,8 +124,47 @@ create_launcher() {
     local desktop_dir="$1"
     local desktop_file="$desktop_dir/${APP_SLUG}.desktop"
     local icon_path=""
+    local bundled_desktop_file=""
+    local bundled_icon_name=""
+    local icon_candidate=""
 
-    icon_path="$(find "$APP_DIR" -type f \( -iname '*gridtracker*.png' -o -iname '*gridtracker*.svg' -o -iname '*gridtracker*.xpm' \) | head -n 1 || true)"
+    bundled_desktop_file="$(find "$APP_DIR" -type f -name '*.desktop' | head -n 1 || true)"
+    if [ -n "$bundled_desktop_file" ]; then
+        bundled_icon_name="$(sed -n 's/^Icon=//p' "$bundled_desktop_file" | head -n 1 || true)"
+    fi
+
+    if [ -n "$bundled_icon_name" ]; then
+        for icon_candidate in \
+            "$bundled_icon_name" \
+            "$APP_DIR/$bundled_icon_name" \
+            "$APP_DIR/${bundled_icon_name#/}"
+        do
+            if [ -f "$icon_candidate" ]; then
+                icon_path="$icon_candidate"
+                break
+            fi
+        done
+
+        if [ -z "$icon_path" ] && [[ "$bundled_icon_name" != */* ]]; then
+            icon_path="$(find "$APP_DIR" -type f \( \
+                -iname "${bundled_icon_name}.png" -o \
+                -iname "${bundled_icon_name}.svg" -o \
+                -iname "${bundled_icon_name}.xpm" \
+            \) | head -n 1 || true)"
+        fi
+    fi
+
+    [ -n "$icon_path" ] || icon_path="$(find "$APP_DIR" -type f \( \
+        -iname '*gridtracker*.png' -o \
+        -iname '*gridtracker*.svg' -o \
+        -iname '*gridtracker*.xpm' -o \
+        -iname '.DirIcon' -o \
+        -iname 'icon.png' -o \
+        -iname 'icon.svg' -o \
+        -iname '*.png' -o \
+        -iname '*.svg' \
+    \) | head -n 1 || true)"
+
     [ -n "$icon_path" ] || icon_path="applications-internet"
 
     mkdir -p "$HOME/.local/share/applications" "$desktop_dir"
