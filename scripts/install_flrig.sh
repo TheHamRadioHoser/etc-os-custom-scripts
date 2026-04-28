@@ -5,87 +5,174 @@ set -euo pipefail
 
 # --- EDIT THESE if adapting for another program ---
 PROGRAM_NAME="flrig"
+APP_SLUG="${PROGRAM_NAME}"
+DISPLAY_NAME="FLRIG"
 URL_BASE="https://www.w1hkj.org/files/flrig/"
-APP_DIR="$HOME/Applications/${PROGRAM_NAME}"
-LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${PROGRAM_NAME}.desktop"
-DESKTOP_FILE="$HOME/Desktop/${PROGRAM_NAME}.desktop"
-BUILD_DIR="$HOME/Downloads/${PROGRAM_NAME}_build"
+APP_DIR="$HOME/Applications/${APP_SLUG}"
+BUILD_DIR="$HOME/Downloads/${APP_SLUG}_build"
+LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
+CONFIG_NOTE="$HOME/.${PROGRAM_NAME}"
 # --------------------------------------------------
 
-echo "=== ${PROGRAM_NAME} Installer ==="
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
 
-# Install the packages needed to compile flrig from source.
-# These are development libraries (headers + compilers) - not the same as
-# the runtime packages an end-user would install via apt.
-echo "Installing build dependencies..."
-sudo apt update
-sudo apt install -y \
-    build-essential pkg-config \
-    libfltk1.3-dev libhamlib-dev libxml2-dev \
-    libasound2-dev libpulse-dev libudev-dev
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command '$1' not found"
+}
 
-# Fetch the directory listing from the upstream site and pull out the
-# highest version number tarball using sort -V (version-aware sort).
-echo "Detecting latest version..."
-LATEST=$(wget -qO- "$URL_BASE" | grep -oE "${PROGRAM_NAME}-[0-9.]+\.tar\.gz" | sort -V | tail -n 1)
-[ -n "$LATEST" ] || { echo "Error: could not detect latest version."; exit 1; }
+get_desktop_dir() {
+    local desktop_dir=""
+    if command -v xdg-user-dir >/dev/null 2>&1; then
+        desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    fi
+    [ -n "$desktop_dir" ] || desktop_dir="$HOME/Desktop"
+    printf '%s\n' "$desktop_dir"
+}
 
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
-rm -rf ${PROGRAM_NAME}-*
+ensure_safe_app_dir() {
+    case "$APP_DIR" in
+        "$HOME"/Applications/*) return 0 ;;
+        *) die "refusing to install outside $HOME/Applications: $APP_DIR" ;;
+    esac
+}
 
-wget "${URL_BASE}${LATEST}"
-tar -xvf "$LATEST"
+maybe_switch_ubuntu_2210_to_old_releases() {
+    local os_id="" os_codename="" reply="" backup=""
 
-cd ${PROGRAM_NAME}-*/
+    [ -r /etc/os-release ] || return 0
+    os_id="$(sed -n 's/^ID=//p' /etc/os-release | tr -d '"' | head -n 1)"
+    os_codename="$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release | tr -d '"' | head -n 1)"
 
-# --prefix tells the build system to install everything under ~/Applications/flrig/
-# instead of the system-wide /usr/local. This keeps it fully parallel to any
-# version that may be pre-installed on your OS, and means no sudo is needed
-# for the install step.
-./configure --prefix="$APP_DIR"
-make
-make install
+    [ "$os_id" = "ubuntu" ] || return 0
+    [ "$os_codename" = "kinetic" ] || return 0
+    grep -Rqs 'old-releases.ubuntu.com/ubuntu' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null && return 0
 
-# Create the directories for the desktop launcher files.
-mkdir -p "$HOME/.local/share/applications"
-mkdir -p "$HOME/Desktop"
+    echo "Ubuntu 22.10 (kinetic) is EOL, so normal Ubuntu mirrors may fail."
+    read -r -p "Switch /etc/apt/sources.list to old-releases.ubuntu.com now? [y/N] " reply || true
+    case "$reply" in
+        [Yy]|[Yy][Ee][Ss]) ;;
+        *) echo "Skipping apt source change. apt may fail if sources are not already fixed."; return 0 ;;
+    esac
 
-# Find an icon that was installed with the program. Fall back to a generic
-# system icon name if none is found.
-ICON_PATH=""
-if [ -f "$APP_DIR/share/pixmaps/${PROGRAM_NAME}.xpm" ]; then
-    ICON_PATH="$APP_DIR/share/pixmaps/${PROGRAM_NAME}.xpm"
-elif [ -f "$APP_DIR/share/pixmaps/${PROGRAM_NAME}.png" ]; then
-    ICON_PATH="$APP_DIR/share/pixmaps/${PROGRAM_NAME}.png"
-else
-    ICON_PATH="applications-amateur-radio"
-fi
+    [ -f /etc/apt/sources.list ] || die "/etc/apt/sources.list was not found"
+    backup="/etc/apt/sources.list.backup-${APP_SLUG}-$(date +%Y%m%d%H%M%S)"
+    sudo cp /etc/apt/sources.list "$backup"
+    sudo sed -i \
+        -e 's|http://[A-Za-z0-9.-]*/ubuntu|http://old-releases.ubuntu.com/ubuntu|g' \
+        -e 's|https://[A-Za-z0-9.-]*/ubuntu|http://old-releases.ubuntu.com/ubuntu|g' \
+        /etc/apt/sources.list
+    echo "Backed up original apt sources to $backup"
+}
 
-# Write the .desktop file. This is what makes the app appear in the
-# application launcher search and on the desktop.
-cat > "$LOCAL_DESKTOP_FILE" <<EOF
+install_dependencies() {
+    echo "Installing build dependencies..."
+    maybe_switch_ubuntu_2210_to_old_releases
+    sudo apt update
+    sudo apt install -y \
+        build-essential pkg-config wget ca-certificates \
+        libfltk1.3-dev libhamlib-dev libxml2-dev \
+        libasound2-dev libpulse-dev libudev-dev
+}
+
+cleanup() {
+    rm -rf "$BUILD_DIR"
+}
+
+replace_app_dir() {
+    local new_dir="$1"
+    local backup_dir=""
+
+    ensure_safe_app_dir
+    [ -d "$new_dir" ] || die "staged app directory was not created: $new_dir"
+    mkdir -p "$(dirname "$APP_DIR")"
+
+    if [ -e "$APP_DIR" ]; then
+        backup_dir="${APP_DIR}.previous.$$"
+        rm -rf "$backup_dir"
+        mv "$APP_DIR" "$backup_dir"
+    fi
+
+    if mv "$new_dir" "$APP_DIR"; then
+        [ -n "$backup_dir" ] && rm -rf "$backup_dir"
+    else
+        [ -n "$backup_dir" ] && mv "$backup_dir" "$APP_DIR"
+        die "could not replace $APP_DIR"
+    fi
+}
+
+create_launcher() {
+    local desktop_dir="$1"
+    local desktop_file="$desktop_dir/${APP_SLUG}.desktop"
+    local icon_path="applications-amateur-radio"
+
+    if [ -f "$APP_DIR/share/pixmaps/${PROGRAM_NAME}.xpm" ]; then
+        icon_path="$APP_DIR/share/pixmaps/${PROGRAM_NAME}.xpm"
+    elif [ -f "$APP_DIR/share/pixmaps/${PROGRAM_NAME}.png" ]; then
+        icon_path="$APP_DIR/share/pixmaps/${PROGRAM_NAME}.png"
+    fi
+
+    mkdir -p "$HOME/.local/share/applications" "$desktop_dir"
+
+    cat > "$LOCAL_DESKTOP_FILE" <<EOF
 [Desktop Entry]
-Name=FLRIG
-Comment=FLRIG Transceiver Control
-Exec=$APP_DIR/bin/${PROGRAM_NAME}
-Icon=$ICON_PATH
+Name=${DISPLAY_NAME}
+Comment=FLRIG transceiver control
+Exec="$APP_DIR/bin/${PROGRAM_NAME}" %U
+Icon=${icon_path}
 Terminal=false
 Type=Application
 Categories=HamRadio;Utility;
+StartupNotify=true
 EOF
 
-cp "$LOCAL_DESKTOP_FILE" "$DESKTOP_FILE"
-chmod +x "$LOCAL_DESKTOP_FILE"
-chmod +x "$DESKTOP_FILE"
-gio set "$DESKTOP_FILE" metadata::trusted true >/dev/null 2>&1 || true
+    cp "$LOCAL_DESKTOP_FILE" "$desktop_file"
+    chmod +x "$LOCAL_DESKTOP_FILE" "$desktop_file"
+    gio set "$desktop_file" metadata::trusted true >/dev/null 2>&1 || true
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+}
 
-# Tell the desktop environment to re-scan for new/changed .desktop files
-# so the app shows up in the launcher search immediately.
-update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+echo "=== ${DISPLAY_NAME} Installer ==="
 
-# Remove all the source code and intermediate build files — they are no
-# longer needed once the program is installed.
-rm -rf "$BUILD_DIR"
+require_command wget
+require_command grep
+require_command sort
+require_command tar
+ensure_safe_app_dir
+trap cleanup EXIT
 
-echo "Done → run ${PROGRAM_NAME}"
+install_dependencies
+
+echo "Detecting latest version..."
+page="$(wget -qO- "$URL_BASE")"
+latest_file="$(printf '%s\n' "$page" | grep -oE "${PROGRAM_NAME}-[0-9]+(\.[0-9]+)*\.tar\.gz" | sort -V | tail -n 1 || true)"
+[ -n "$latest_file" ] || die "could not detect latest ${PROGRAM_NAME} tarball"
+
+mkdir -p "$BUILD_DIR"
+cd "$BUILD_DIR"
+wget -O "$latest_file" "${URL_BASE}${latest_file}"
+tar -xzf "$latest_file"
+
+source_dir="$(find "$BUILD_DIR" -maxdepth 1 -type d -name "${PROGRAM_NAME}-*" | sort -V | tail -n 1 || true)"
+[ -n "$source_dir" ] || die "source directory was not found after extraction"
+
+cd "$source_dir"
+staging_root="$BUILD_DIR/stage"
+rm -rf "$staging_root"
+
+echo "Building ${PROGRAM_NAME}..."
+./configure --prefix="$APP_DIR"
+make -j"$(nproc)"
+make install DESTDIR="$staging_root"
+
+new_app_dir="${staging_root}${APP_DIR}"
+[ -x "$new_app_dir/bin/${PROGRAM_NAME}" ] || die "installed binary was not found in staged app directory"
+
+replace_app_dir "$new_app_dir"
+create_launcher "$(get_desktop_dir)"
+
+echo "Done -> run ${DISPLAY_NAME}"
+echo "Installed to: $APP_DIR"
+echo "Config not touched: $CONFIG_NOTE"

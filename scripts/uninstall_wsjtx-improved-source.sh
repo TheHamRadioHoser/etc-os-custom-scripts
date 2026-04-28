@@ -5,49 +5,53 @@ set -euo pipefail
 
 # --- EDIT THESE if adapting for another program ---
 PROGRAM_NAME="wsjtx-improved"
-BUILD_DIR="$HOME/Downloads/${PROGRAM_NAME}_build"
+APP_SLUG="${PROGRAM_NAME}"
+DISPLAY_NAME="WSJT-X Improved"
+APP_DIR="$HOME/Applications/${APP_SLUG}"
+BUILD_DIR="$HOME/Downloads/${APP_SLUG}_build"
+LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
+CONFIG_DIR="$HOME/.config/${APP_SLUG}"
+DATA_DIR="$HOME/.local/share/${APP_SLUG}"
 # --------------------------------------------------
 
-# Find the most recently installed versioned directory (e.g. wsjtx-improved-2.6.1).
-# The install script creates one versioned directory per install and removes
-# old ones, so under normal use only one should ever exist.
-LATEST_APP_DIR=$(find "$HOME/Applications" -maxdepth 1 -mindepth 1 -type d -name "${PROGRAM_NAME}-*" 2>/dev/null | sort -V | tail -n 1 || true)
-APP_BASENAME=""
-LOCAL_DESKTOP_FILE=""
-DESKTOP_FILE=""
-CONFIG_DIR=""
-DATA_DIR=""
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
 
-if [ -n "$LATEST_APP_DIR" ]; then
-    APP_BASENAME="$(basename "$LATEST_APP_DIR")"
-    LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${APP_BASENAME}.desktop"
-    DESKTOP_FILE="$HOME/Desktop/${APP_BASENAME}.desktop"
-    CONFIG_DIR="$HOME/.config/${APP_BASENAME}"
-    DATA_DIR="$HOME/.local/share/${APP_BASENAME}"
-fi
+get_desktop_dir() {
+    local desktop_dir=""
+    if command -v xdg-user-dir >/dev/null 2>&1; then
+        desktop_dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    fi
+    [ -n "$desktop_dir" ] || desktop_dir="$HOME/Desktop"
+    printf '%s\n' "$desktop_dir"
+}
 
-echo "=== ${PROGRAM_NAME} Source Uninstaller ==="
+ensure_safe_app_dir() {
+    case "$APP_DIR" in
+        "$HOME"/Applications/*) return 0 ;;
+        *) die "refusing to remove outside $HOME/Applications: $APP_DIR" ;;
+    esac
+}
 
-if [ -n "$LATEST_APP_DIR" ]; then
-    echo "Removing application files: $LATEST_APP_DIR"
-    rm -rf "$LATEST_APP_DIR"
+echo "=== ${DISPLAY_NAME} Source Uninstaller ==="
 
-    echo "Removing desktop files..."
-    rm -f "$LOCAL_DESKTOP_FILE"
-    rm -f "$DESKTOP_FILE"
-else
-    echo "No installed ${PROGRAM_NAME} source build found in $HOME/Applications."
-fi
+ensure_safe_app_dir
+desktop_dir="$(get_desktop_dir)"
 
-echo "Removing build and download files..."
+echo "Removing application files..."
+rm -rf "$APP_DIR"
+
+echo "Removing desktop files..."
+rm -f "$LOCAL_DESKTOP_FILE"
+rm -f "$desktop_dir/${APP_SLUG}.desktop"
+
+echo "Removing leftover build/download files..."
 rm -rf "$BUILD_DIR"
-rm -f "$HOME/Downloads/wsjtx-"*_improved_PLUS_*.tgz
 
-# Tell the desktop environment to re-scan so the removed app disappears
-# from the launcher search immediately.
 update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
 
 echo "Done."
-if [ -n "$APP_BASENAME" ]; then
-    echo "Note: config files in ${CONFIG_DIR} and data files in ${DATA_DIR} are NOT removed."
-fi
+echo "Config not removed: $CONFIG_DIR"
+echo "Data not removed: $DATA_DIR"
