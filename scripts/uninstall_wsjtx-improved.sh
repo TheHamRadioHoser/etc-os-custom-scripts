@@ -4,9 +4,9 @@ set -euo pipefail
 # Author: Eric Rouse (VA3FYB)
 
 # --- EDIT THESE if adapting for another program ---
-PROGRAM_NAME="flrig"
+PROGRAM_NAME="wsjtx-improved"
 APP_SLUG="${PROGRAM_NAME}"
-DISPLAY_NAME="FLRIG"
+DISPLAY_NAME="WSJT-X Improved"
 APP_DIR="$HOME/Applications/${APP_SLUG}"
 BUILD_DIR="$HOME/Downloads/${APP_SLUG}_build"
 LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
@@ -35,7 +35,7 @@ ensure_safe_app_dir() {
     esac
 }
 
-echo "=== ${DISPLAY_NAME} Uninstaller ==="
+echo "=== ${DISPLAY_NAME} Source Uninstaller ==="
 
 ensure_safe_app_dir
 desktop_dir="$(get_desktop_dir)"
@@ -53,5 +53,5 @@ rm -rf "$BUILD_DIR"
 update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
 
 echo "Done."
-echo "Config not removed: $CONFIG_DIR/.flrig"
+echo "Config not removed: $CONFIG_DIR"
 echo "Data not removed: $DATA_DIR"

@@ -10,8 +10,10 @@ DISPLAY_NAME="FLRIG"
 URL_BASE="https://www.w1hkj.org/files/flrig/"
 APP_DIR="$HOME/Applications/${APP_SLUG}"
 BUILD_DIR="$HOME/Downloads/${APP_SLUG}_build"
+WRAPPER_PATH="$APP_DIR/run-${APP_SLUG}.sh"
 LOCAL_DESKTOP_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
-CONFIG_NOTE="$HOME/.${PROGRAM_NAME}"
+CONFIG_DIR="$HOME/.config/${APP_SLUG}"
+DATA_DIR="$HOME/.local/share/${APP_SLUG}"
 # --------------------------------------------------
 
 die() {
@@ -107,6 +109,19 @@ replace_app_dir() {
     fi
 }
 
+create_wrapper() {
+    cat > "$WRAPPER_PATH" <<EOF
+#!/bin/bash
+set -e
+export HOME="$CONFIG_DIR"
+export XDG_CONFIG_HOME="$CONFIG_DIR"
+export XDG_DATA_HOME="$DATA_DIR"
+mkdir -p "\$HOME" "\$XDG_CONFIG_HOME" "\$XDG_DATA_HOME"
+exec "$APP_DIR/bin/${PROGRAM_NAME}" "\$@"
+EOF
+    chmod +x "$WRAPPER_PATH"
+}
+
 create_launcher() {
     local desktop_dir="$1"
     local desktop_file="$desktop_dir/${APP_SLUG}.desktop"
@@ -124,7 +139,7 @@ create_launcher() {
 [Desktop Entry]
 Name=${DISPLAY_NAME}
 Comment=FLRIG transceiver control
-Exec="$APP_DIR/bin/${PROGRAM_NAME}" %U
+Exec="$WRAPPER_PATH" %U
 Icon=${icon_path}
 Terminal=false
 Type=Application
@@ -175,8 +190,9 @@ new_app_dir="${staging_root}${APP_DIR}"
 [ -x "$new_app_dir/bin/${PROGRAM_NAME}" ] || die "installed binary was not found in staged app directory"
 
 replace_app_dir "$new_app_dir"
+create_wrapper
 create_launcher "$(get_desktop_dir)"
 
 echo "Done -> run ${DISPLAY_NAME}"
 echo "Installed to: $APP_DIR"
-echo "Config not touched: $CONFIG_NOTE"
+echo "Config not touched except this app's own config: $CONFIG_DIR/.flrig"
