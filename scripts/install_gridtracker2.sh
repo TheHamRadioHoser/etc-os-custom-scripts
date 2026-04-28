@@ -44,6 +44,15 @@ detect_gridtracker_arch() {
     esac
 }
 
+detect_deb_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64) printf '%s\n' "amd64" ;;
+        aarch64|arm64) printf '%s\n' "arm64" ;;
+        armv7l|armv7*) printf '%s\n' "armhf" ;;
+        *) die "unsupported CPU architecture: $(uname -m)" ;;
+    esac
+}
+
 ensure_safe_app_dir() {
     case "$APP_DIR" in
         "$HOME"/Applications/*) return 0 ;;
@@ -100,6 +109,44 @@ prepare_new_app_dir() {
     cp -a "$extract_dir"/. "$new_dir"/
 }
 
+copy_icon_from_deb() {
+    local deb_url="$1"
+    local new_dir="$2"
+    local deb_file="$BUILD_DIR/${PROGRAM_NAME}-icon.deb"
+    local deb_extract_dir="$BUILD_DIR/deb-extract"
+    local icon_source=""
+
+    [ -n "$deb_url" ] || return 0
+    command -v dpkg-deb >/dev/null 2>&1 || {
+        echo "Warning: dpkg-deb was not found, so the GridTracker2 icon could not be extracted." >&2
+        return 0
+    }
+
+    echo "Downloading GridTracker2 .deb to extract the official icon..."
+    wget -O "$deb_file" "$deb_url"
+    rm -rf "$deb_extract_dir"
+    mkdir -p "$deb_extract_dir"
+    dpkg-deb -x "$deb_file" "$deb_extract_dir"
+
+    icon_source="$(find "$deb_extract_dir" -type f \( \
+        -iname '*gridtracker*.png' -o \
+        -iname '*gridtracker*.svg' -o \
+        -iname '*gridtracker*.xpm' \
+    \) -printf '%s\t%p\n' | sort -n | tail -n 1 | cut -f2- || true)"
+
+    if [ -z "$icon_source" ]; then
+        echo "Warning: no GridTracker2 icon was found inside the .deb." >&2
+        return 0
+    fi
+
+    case "$icon_source" in
+        *.png) cp "$icon_source" "$new_dir/${PROGRAM_NAME}.png" ;;
+        *.svg) cp "$icon_source" "$new_dir/${PROGRAM_NAME}.svg" ;;
+        *.xpm) cp "$icon_source" "$new_dir/${PROGRAM_NAME}.xpm" ;;
+        *) cp "$icon_source" "$new_dir/${PROGRAM_NAME}.png" ;;
+    esac
+}
+
 create_wrapper() {
     cat > "$WRAPPER_PATH" <<EOF
 #!/bin/bash
@@ -128,12 +175,20 @@ create_launcher() {
     local bundled_icon_name=""
     local icon_candidate=""
 
+    if [ -f "$APP_DIR/${PROGRAM_NAME}.png" ]; then
+        icon_path="$APP_DIR/${PROGRAM_NAME}.png"
+    elif [ -f "$APP_DIR/${PROGRAM_NAME}.svg" ]; then
+        icon_path="$APP_DIR/${PROGRAM_NAME}.svg"
+    elif [ -f "$APP_DIR/${PROGRAM_NAME}.xpm" ]; then
+        icon_path="$APP_DIR/${PROGRAM_NAME}.xpm"
+    fi
+
     bundled_desktop_file="$(find "$APP_DIR" -type f -name '*.desktop' | head -n 1 || true)"
     if [ -n "$bundled_desktop_file" ]; then
         bundled_icon_name="$(sed -n 's/^Icon=//p' "$bundled_desktop_file" | head -n 1 || true)"
     fi
 
-    if [ -n "$bundled_icon_name" ]; then
+    if [ -z "$icon_path" ] && [ -n "$bundled_icon_name" ]; then
         for icon_candidate in \
             "$bundled_icon_name" \
             "$APP_DIR/$bundled_icon_name" \
@@ -197,11 +252,13 @@ ensure_safe_app_dir
 trap cleanup EXIT
 
 archive_arch="$(detect_gridtracker_arch)"
+deb_arch="$(detect_deb_arch)"
 
 echo "Detecting latest version..."
 page="$(wget -qO- "$URL_BASE")"
 latest_url="$(printf '%s\n' "$page" | grep -oE "https://download2\.gridtracker\.org/${UPSTREAM_NAME}-[0-9]+(\.[0-9]+)*-${archive_arch}\.tar\.gz" | sort -V | tail -n 1 || true)"
 [ -n "$latest_url" ] || die "could not detect latest ${UPSTREAM_NAME} tar.gz URL for ${archive_arch}"
+icon_deb_url="$(printf '%s\n' "$page" | grep -oE "https://download2\.gridtracker\.org/${UPSTREAM_NAME}-[0-9]+(\.[0-9]+)*-${deb_arch}\.deb" | sort -V | tail -n 1 || true)"
 
 mkdir -p "$BUILD_DIR/extract"
 cd "$BUILD_DIR"
@@ -211,6 +268,7 @@ tar -xzf "${PROGRAM_NAME}.tar.gz" -C "$BUILD_DIR/extract"
 new_app_dir="$BUILD_DIR/new-app"
 rm -rf "$new_app_dir"
 prepare_new_app_dir "$BUILD_DIR/extract" "$new_app_dir"
+copy_icon_from_deb "$icon_deb_url" "$new_app_dir"
 
 if ! find "$new_app_dir" -maxdepth 1 -type f \( -name 'GridTracker2' -o -name 'gridtracker2' -o -name 'GridTracker' -o -name 'gridtracker' \) -perm -u+x | grep -q .; then
     die "GridTracker2 executable was not found in extracted tarball"

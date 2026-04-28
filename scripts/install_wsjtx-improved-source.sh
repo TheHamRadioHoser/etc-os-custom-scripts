@@ -198,7 +198,15 @@ build_and_stage_wsjtx() {
         ..
 
     cmake --build . -j"$(nproc)"
-    DESTDIR="$staging_root" cmake --install .
+    DESTDIR="$staging_root" cmake --install . --prefix "$APP_DIR"
+
+    if [ ! -x "$staged_app_dir/bin/wsjtx" ]; then
+        local inner_build_dir="$BUILD_DIR/wsjtx-src/build/wsjtx-prefix/src/wsjtx-build"
+        [ -f "$inner_build_dir/cmake_install.cmake" ] || die "inner WSJT-X build install file was not found"
+
+        echo "Top-level install did not stage wsjtx; installing from inner WSJT-X build..."
+        DESTDIR="$staging_root" cmake --install "$inner_build_dir" --prefix "$APP_DIR"
+    fi
 
     [ -x "$staged_app_dir/bin/wsjtx" ] || die "staged wsjtx binary was not found"
     [ -x "$staged_app_dir/bin/jt9" ] || die "staged jt9 binary was not found"
