@@ -1,15 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-#Author: Eric Rouse (VA3FYB)
+# Author: Eric Rouse (VA3FYB)
 
-# EDIT THESE
+# --- EDIT THESE if adapting for another program ---
 PROGRAM_NAME="wsjtx-improved"
 FILES_URL="https://sourceforge.net/projects/wsjt-x-improved/files/"
 USE_SYSTEM_HAMLIB="yes"
 HAMLIB_REPO="https://github.com/Hamlib/Hamlib.git"
 HAMLIB_BRANCH="integration"
+# --------------------------------------------------
 
+# These are all computed at runtime — do not edit.
 VERSION=""
 BUILD=""
 RELEASE_ID=""
@@ -47,6 +49,7 @@ detect_latest_release() {
     echo "Detecting latest WSJT-X Improved source release..."
     page=$(wget -qO- "$FILES_URL")
 
+    # Pull the highest version folder name from the SourceForge file listing.
     latest_dir=$(printf '%s\n' "$page" | grep -oE 'WSJT-X_v[0-9]+(\.[0-9]+)+' | sort -Vu | tail -n 1)
     [ -n "$latest_dir" ] || {
         echo "Error: could not determine latest WSJT-X Improved version folder."
@@ -57,6 +60,8 @@ detect_latest_release() {
     SOURCE_PAGE_URL="${FILES_URL}${latest_dir}/Source%20code/"
     source_page=$(wget -qO- "$SOURCE_PAGE_URL")
 
+    # Find the standard Qt5 source tarball — exclude the AL (Amateur Linux),
+    # widescreen, and qt6 variants which need different build handling.
     SOURCE_FILE=$(printf '%s\n' "$source_page" \
         | grep -oE "wsjtx-${VERSION}[^\"'[:space:]]*\.tgz" \
         | grep -vE '_AL_|_widescreen_|_qt6' \
@@ -85,6 +90,8 @@ detect_latest_release() {
 }
 
 switch_to_old_releases() {
+    # Only applies to Ubuntu. If apt sources already point at old-releases,
+    # or if this is not Ubuntu, nothing needs to change.
     if ! grep -q '^ID=ubuntu' /etc/os-release 2>/dev/null; then
         return 0
     fi
@@ -93,7 +100,10 @@ switch_to_old_releases() {
         return 0
     fi
 
-    echo "Switching apt sources to old-releases..."
+    # Ubuntu 22.10 is EOL. The default apt mirrors no longer carry its packages.
+    # This rewrites sources.list to use the old-releases archive so apt update
+    # and all dependency installs work correctly.
+    echo "Switching apt sources to old-releases.ubuntu.com (required for EOL Ubuntu)..."
     sudo cp /etc/apt/sources.list /etc/apt/sources.list.backup-${PROGRAM_NAME}-$(date +%Y%m%d%H%M%S)
     sudo sed -i \
         -e 's|http://[A-Za-z0-9.-]*/ubuntu|http://old-releases.ubuntu.com/ubuntu|g' \
@@ -112,6 +122,8 @@ install_dependencies() {
 }
 
 use_system_hamlib() {
+    # Try to use Hamlib that is already installed on the system before
+    # building it from source — saves significant build time.
     if [ "$USE_SYSTEM_HAMLIB" != "yes" ]; then
         return 1
     fi
@@ -133,7 +145,7 @@ use_system_hamlib() {
 }
 
 build_hamlib() {
-    echo "Building Hamlib..."
+    echo "Building Hamlib from source (no system Hamlib found)..."
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
 
@@ -202,6 +214,25 @@ copy_executables_from_dir() {
     done
 }
 
+remove_previous_installs() {
+    # Each install creates a versioned directory (e.g. wsjtx-improved-2.6.1).
+    # When upgrading, we need to remove old versioned directories and their
+    # desktop files so they don't pile up in ~/Applications and the app launcher.
+    local old_dir old_basename
+
+    while IFS= read -r old_dir; do
+        [ -n "$old_dir" ] || continue
+        old_basename="$(basename "$old_dir")"
+
+        echo "Removing previous install: $old_dir"
+        rm -rf "$old_dir"
+        rm -f "$HOME/.local/share/applications/${old_basename}.desktop"
+        rm -f "$HOME/Desktop/${old_basename}.desktop"
+    done < <(find "$HOME/Applications" -maxdepth 1 -mindepth 1 -type d -name "${PROGRAM_NAME}-*" 2>/dev/null || true)
+
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+}
+
 package_built_app() {
     local installed_bin_dir="$APP_DIR/bin"
     local superbuild_bin_dir="$BUILD_DIR/wsjtx-src/build/wsjtx-prefix/src/wsjtx-build"
@@ -209,9 +240,15 @@ package_built_app() {
     local runtime_source_dir=""
     local source_icon=""
 
+    # Remove any previous versioned installs before creating the new one,
+    # so old versions don't accumulate in ~/Applications and the app launcher.
+    remove_previous_installs
+
     rm -rf "$APP_DIR"
     mkdir -p "$APP_DIR" "$APP_BIN_DIR"
 
+    # cmake --install may place the binaries in different locations depending
+    # on whether it used a superbuild or flat build. Check each in order.
     if [ -x "$superbuild_bin_dir/wsjtx" ]; then
         runtime_source_dir="$superbuild_bin_dir"
         INSTALL_MODE="packaged-from-build"
@@ -254,6 +291,8 @@ make_launcher() {
     mkdir -p "$HOME/.local/share/applications"
     mkdir -p "$HOME/Desktop"
 
+    # The wrapper script sets isolated XDG config and data directories so
+    # this install does not collide with any other WSJT-X installation.
     cat > "$WRAPPER_PATH" <<EOW
 #!/bin/bash
 export XDG_CONFIG_HOME="$CONFIG_DIR"
@@ -263,6 +302,8 @@ exec "$TARGET_BIN" "\$@"
 EOW
     chmod +x "$WRAPPER_PATH"
 
+    # Write the .desktop file. This is what makes the app appear in the
+    # application launcher search and on the desktop.
     cat > "$LOCAL_DESKTOP_FILE" <<EOF2
 [Desktop Entry]
 Version=1.0
@@ -277,14 +318,18 @@ StartupNotify=true
 EOF2
 
     cp "$LOCAL_DESKTOP_FILE" "$DESKTOP_FILE"
-
     chmod +x "$LOCAL_DESKTOP_FILE"
     chmod +x "$DESKTOP_FILE"
     gio set "$DESKTOP_FILE" metadata::trusted true >/dev/null 2>&1 || true
+
+    # Tell the desktop environment to re-scan for new/changed .desktop files
+    # so the app shows up in the launcher search immediately.
     update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
 }
 
 cleanup_build_dir() {
+    # Remove all source code and intermediate build files — they are no
+    # longer needed once the program is installed.
     rm -rf "$BUILD_DIR"
 }
 
